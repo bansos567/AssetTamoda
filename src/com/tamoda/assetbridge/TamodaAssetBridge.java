@@ -4,8 +4,6 @@ import com.google.appinventor.components.annotations.*;
 import com.google.appinventor.components.runtime.*;
 import com.google.appinventor.components.common.*;
 import android.content.Context;
-import android.view.View;
-import android.view.ViewGroup;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.WebResourceResponse;
@@ -14,10 +12,12 @@ import java.io.InputStream;
 import java.io.IOException;
 import android.os.Build;
 import android.util.Log;
+import java.util.HashMap;
+import java.util.Map;
 
 @DesignerComponent(
-    version = 5,
-    description = "Injektor Aset TAMODA V5 - Ultimate Edition (Fixed Path & Timing).",
+    version = 2,
+    description = "Ekstensi Injektor Aset Hybrid untuk TAMODA App. Support HTML External (Blogger).",
     category = ComponentCategory.EXTENSION,
     nonVisible = true,
     iconName = "images/extension.png"
@@ -32,110 +32,83 @@ public class TamodaAssetBridge extends AndroidNonvisibleComponent {
         this.context = container.$context();
     }
 
-    @SimpleEvent(description = "Laporan status injeksi.")
-    public void OnCaptureStatus(boolean success, String message) {
-        EventDispatcher.dispatchEvent(this, "OnCaptureStatus", success, message);
-    }
-
-    @SimpleFunction(description = "Mulai proses tangkap aset. Gunakan domain dummy yang sama dengan di HTML.")
-    public void StartCapture(final Component container, final String dummyDomain) {
+    @SimpleFunction(description = "Memasang pencegat lalu lintas jaringan ke WebViewer untuk menyuntikkan aset lokal.")
+    public void StartCapture(final WebViewer webViewerComponent, String dummyDomain) {
         if (dummyDomain != null && !dummyDomain.isEmpty()) {
-            this.targetDomain = dummyDomain.endsWith("/") ? dummyDomain : dummyDomain + "/";
+            this.targetDomain = dummyDomain;
+            if (!this.targetDomain.endsWith("/")) {
+                this.targetDomain += "/";
+            }
         }
 
-        form.runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    View view = null;
-                    if (container instanceof AndroidViewComponent) {
-                        view = ((AndroidViewComponent) container).getView();
+        try {
+            final WebView webView = (WebView) webViewerComponent.getView();
+            
+            webView.setWebViewClient(new WebViewClient() {
+                
+                @Override
+                public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        String url = request.getUrl().toString();
+                        if (url.startsWith(targetDomain)) {
+                            WebResourceResponse response = handleAssetIntercept(url);
+                            if (response != null) {
+                                Map<String, String> headers = new HashMap<>();
+                                headers.put("Access-Control-Allow-Origin", "*");
+                                response.setResponseHeaders(headers);
+                                return response;
+                            }
+                        }
                     }
-
-                    final WebView webView = findWebViewRecursive(view);
-
-                    if (webView != null) {
-                        // SET CLIENT BARU
-                        webView.setWebViewClient(new WebViewClient() {
-                            @Override
-                            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                                    return handleAssetIntercept(request.getUrl().toString());
-                                }
-                                return super.shouldInterceptRequest(view, request);
-                            }
-
-                            @Override
-                            public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
-                                return handleAssetIntercept(url);
-                            }
-
-                            // Tambahan: Pastikan gambar dimuat ulang saat halaman siap
-                            @Override
-                            public void onPageFinished(WebView view, String url) {
-                                super.onPageFinished(view, url);
-                            }
-                        });
-                        
-                        // PAKSA WEBVIEW SUPAYA MAU AKSES FILE LOKAL
-                        webView.getSettings().setAllowFileAccess(true);
-                        webView.getSettings().setAllowContentAccess(true);
-                        
-                        OnCaptureStatus(true, "WebView Berhasil Disuntik!");
-                    } else {
-                        OnCaptureStatus(false, "Error: WebView tidak ditemukan di dalam komponen tersebut!");
-                    }
-                } catch (Exception e) {
-                    OnCaptureStatus(false, "Fatal Error: " + e.getMessage());
+                    return super.shouldInterceptRequest(view, request);
                 }
-            }
-        });
-    }
 
-    private WebView findWebViewRecursive(View view) {
-        if (view == null) return null;
-        if (view instanceof WebView) return (WebView) view;
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                WebView found = findWebViewRecursive(group.getChildAt(i));
-                if (found != null) return found;
-            }
+                @Override
+                public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+                    if (url.startsWith(targetDomain)) {
+                        WebResourceResponse response = handleAssetIntercept(url);
+                        if (response != null) {
+                            return response; 
+                        }
+                    }
+                    return super.shouldInterceptRequest(view, url);
+                }
+            });
+        } catch (Exception e) {
+            Log.e("TamodaAssetBridge", "Gagal memasang injektor: " + e.getMessage());
         }
-        return null;
     }
 
     private WebResourceResponse handleAssetIntercept(String url) {
-        // Logika pembersihan URL: Hilangkan 'https://app.tamoda/'
-        if (url.startsWith(this.targetDomain)) {
+        try {
+            // Hapus targetDomain dari URL
             String fileName = url.replace(this.targetDomain, "");
             
-            // Buang tanda tanya (query) jika ada, misal: gambar.png?v=123
+            // [PERBAIKAN] Bersihkan parameter URL bawaan Blogger (? atau #)
             if (fileName.contains("?")) {
-                fileName = fileName.split("\\?")[0];
+                fileName = fileName.substring(0, fileName.indexOf("?"));
+            }
+            if (fileName.contains("#")) {
+                fileName = fileName.substring(0, fileName.indexOf("#"));
             }
 
-            try {
-                InputStream is = context.getAssets().open(fileName);
-                String mimeType = getMimeType(fileName);
-                // Kembalikan file dari APK ke WebView
-                return new WebResourceResponse(mimeType, "UTF-8", is);
-            } catch (IOException e) {
-                // Jika file tidak ketemu di assets APK
-                Log.e("TamodaAssetBridge", "File GAK ADA di APK: " + fileName);
-            }
+            String mimeType = "image/png"; 
+            String lowerFileName = fileName.toLowerCase();
+            
+            if (lowerFileName.endsWith(".jpg") || lowerFileName.endsWith(".jpeg")) mimeType = "image/jpeg";
+            else if (lowerFileName.endsWith(".gif")) mimeType = "image/gif";
+            else if (lowerFileName.endsWith(".webp")) mimeType = "image/webp";
+            else if (lowerFileName.endsWith(".svg")) mimeType = "image/svg+xml";
+            else if (lowerFileName.endsWith(".mp3")) mimeType = "audio/mpeg";
+            else if (lowerFileName.endsWith(".css")) mimeType = "text/css";
+            else if (lowerFileName.endsWith(".js")) mimeType = "application/javascript";
+            else if (lowerFileName.endsWith(".json")) mimeType = "application/json";
+
+            InputStream inputStream = context.getAssets().open(fileName);
+            return new WebResourceResponse(mimeType, "UTF-8", inputStream);
+        } catch (IOException e) {
+            Log.e("TamodaAssetBridge", "Aset lokal tidak ditemukan: " + url);
+            return null; 
         }
-        return null;
-    }
-
-    private String getMimeType(String fileName) {
-        String lower = fileName.toLowerCase();
-        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
-        if (lower.endsWith(".gif")) return "image/gif";
-        if (lower.endsWith(".webp")) return "image/webp";
-        if (lower.endsWith(".svg")) return "image/svg+xml";
-        if (lower.endsWith(".css")) return "text/css";
-        if (lower.endsWith(".js")) return "application/javascript";
-        return "image/png";
     }
 }
