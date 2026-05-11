@@ -8,6 +8,9 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebResourceRequest;
+// [TAMBAHAN] Import view dan viewgroup untuk membedah VerticalArrangement
+import android.view.View;
+import android.view.ViewGroup;
 import java.io.InputStream;
 import java.io.IOException;
 import android.os.Build;
@@ -16,8 +19,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 @DesignerComponent(
-    version = 2,
-    description = "Ekstensi Injektor Aset Hybrid untuk TAMODA App. Support HTML External (Blogger).",
+    version = 3,
+    description = "Ekstensi Injektor Aset Hybrid untuk TAMODA App. Support Custom WebView (VerticalArrangement).",
     category = ComponentCategory.EXTENSION,
     nonVisible = true,
     iconName = "images/extension.png"
@@ -32,8 +35,10 @@ public class TamodaAssetBridge extends AndroidNonvisibleComponent {
         this.context = container.$context();
     }
 
-    @SimpleFunction(description = "Memasang pencegat lalu lintas jaringan ke WebViewer untuk menyuntikkan aset lokal.")
-    public void StartCapture(final WebViewer webViewerComponent, String dummyDomain) {
+    // [PERBAIKAN] Parameter diubah dari WebViewer menjadi AndroidViewComponent
+    // Agar bisa menerima komponen apa saja (termasuk VerticalArrangement)
+    @SimpleFunction(description = "Memasang pencegat lalu lintas jaringan ke CustomWebView (lewat VerticalArrangement).")
+    public void StartCapture(final AndroidViewComponent webViewContainer, String dummyDomain) {
         if (dummyDomain != null && !dummyDomain.isEmpty()) {
             this.targetDomain = dummyDomain;
             if (!this.targetDomain.endsWith("/")) {
@@ -42,8 +47,30 @@ public class TamodaAssetBridge extends AndroidNonvisibleComponent {
         }
 
         try {
-            final WebView webView = (WebView) webViewerComponent.getView();
-            
+            View view = webViewContainer.getView();
+            WebView webView = null;
+
+            // Logika Pintar: Cek apakah yang dikirim WebViewer bawaan atau VerticalArrangement
+            if (view instanceof WebView) {
+                webView = (WebView) view;
+            } else if (view instanceof ViewGroup) {
+                ViewGroup vg = (ViewGroup) view;
+                // Menggeledah isi VerticalArrangement untuk mencari Custom WebView
+                for (int i = 0; i < vg.getChildCount(); i++) {
+                    if (vg.getChildAt(i) instanceof WebView) {
+                        webView = (WebView) vg.getChildAt(i);
+                        break;
+                    }
+                }
+            }
+
+            // Jika WebView tidak ditemukan di dalam komponen yang bos masukkan
+            if (webView == null) {
+                Log.e("TamodaAssetBridge", "Error: Tidak ada WebView di dalam komponen yang dipilih!");
+                return;
+            }
+
+            // Pasang pencegat ke WebView yang berhasil ditemukan
             webView.setWebViewClient(new WebViewClient() {
                 
                 @Override
@@ -81,10 +108,8 @@ public class TamodaAssetBridge extends AndroidNonvisibleComponent {
 
     private WebResourceResponse handleAssetIntercept(String url) {
         try {
-            // Hapus targetDomain dari URL
             String fileName = url.replace(this.targetDomain, "");
             
-            // [PERBAIKAN] Bersihkan parameter URL bawaan Blogger (? atau #)
             if (fileName.contains("?")) {
                 fileName = fileName.substring(0, fileName.indexOf("?"));
             }
