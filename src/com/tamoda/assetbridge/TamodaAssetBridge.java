@@ -16,8 +16,8 @@ import android.os.Build;
 import android.util.Log;
 
 @DesignerComponent(
-    version = 2,
-    description = "Injektor Aset Cerdas untuk TAMODA App. Bisa dipasang ke Wadah (Vertical Arrangement) untuk mencari WebView di dalamnya secara otomatis.",
+    version = 5,
+    description = "Injektor Aset TAMODA V5 - Ultimate Edition (Fixed Path & Timing).",
     category = ComponentCategory.EXTENSION,
     nonVisible = true,
     iconName = "images/extension.png"
@@ -32,60 +32,69 @@ public class TamodaAssetBridge extends AndroidNonvisibleComponent {
         this.context = container.$context();
     }
 
-    @SimpleFunction(description = "Injektor Otomatis. Masukkan komponen wadah (misal: VerticalArrangement) dan domain dummy.")
-    public void StartCapture(final AndroidViewComponent webViewContainer, String dummyDomain) {
+    @SimpleEvent(description = "Laporan status injeksi.")
+    public void OnCaptureStatus(boolean success, String message) {
+        EventDispatcher.dispatchEvent(this, "OnCaptureStatus", success, message);
+    }
+
+    @SimpleFunction(description = "Mulai proses tangkap aset. Gunakan domain dummy yang sama dengan di HTML.")
+    public void StartCapture(final Component container, final String dummyDomain) {
         if (dummyDomain != null && !dummyDomain.isEmpty()) {
-            this.targetDomain = dummyDomain;
-            if (!this.targetDomain.endsWith("/")) {
-                this.targetDomain += "/";
-            }
+            this.targetDomain = dummyDomain.endsWith("/") ? dummyDomain : dummyDomain + "/";
         }
 
-        // Ambil View dari wadah yang dimasukkan bos
-        final View containerView = webViewContainer.getView();
-
-        // Jalankan di UI Thread agar tidak crash saat menyentuh WebView
         form.runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                // Cari WebView secara mendalam (Recursive)
-                final WebView realWebView = findWebViewRecursive(containerView);
+                try {
+                    View view = null;
+                    if (container instanceof AndroidViewComponent) {
+                        view = ((AndroidViewComponent) container).getView();
+                    }
 
-                if (realWebView != null) {
-                    realWebView.setWebViewClient(new WebViewClient() {
-                        
-                        // Interceptor untuk HP Modern (Lollipop+)
-                        @Override
-                        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                                String url = request.getUrl().toString();
-                                WebResourceResponse response = handleAssetIntercept(url);
-                                if (response != null) return response;
+                    final WebView webView = findWebViewRecursive(view);
+
+                    if (webView != null) {
+                        // SET CLIENT BARU
+                        webView.setWebViewClient(new WebViewClient() {
+                            @Override
+                            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                    return handleAssetIntercept(request.getUrl().toString());
+                                }
+                                return super.shouldInterceptRequest(view, request);
                             }
-                            return super.shouldInterceptRequest(view, request);
-                        }
 
-                        // Interceptor untuk HP Jadul
-                        @Override
-                        public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
-                            WebResourceResponse response = handleAssetIntercept(url);
-                            if (response != null) return response;
-                            return super.shouldInterceptRequest(view, url);
-                        }
-                    });
-                    Log.i("TamodaAssetBridge", "Berhasil menemukan WebView di dalam wadah dan memasang Interceptor!");
-                } else {
-                    Log.e("TamodaAssetBridge", "Gagal! Tidak ditemukan komponen WebView di dalam wadah yang bos berikan.");
+                            @Override
+                            public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+                                return handleAssetIntercept(url);
+                            }
+
+                            // Tambahan: Pastikan gambar dimuat ulang saat halaman siap
+                            @Override
+                            public void onPageFinished(WebView view, String url) {
+                                super.onPageFinished(view, url);
+                            }
+                        });
+                        
+                        // PAKSA WEBVIEW SUPAYA MAU AKSES FILE LOKAL
+                        webView.getSettings().setAllowFileAccess(true);
+                        webView.getSettings().setAllowContentAccess(true);
+                        
+                        OnCaptureStatus(true, "WebView Berhasil Disuntik!");
+                    } else {
+                        OnCaptureStatus(false, "Error: WebView tidak ditemukan di dalam komponen tersebut!");
+                    }
+                } catch (Exception e) {
+                    OnCaptureStatus(false, "Fatal Error: " + e.getMessage());
                 }
             }
         });
     }
 
-    // Mesin Pencari WebView: Bongkar wadah sampai ketemu WebView
     private WebView findWebViewRecursive(View view) {
-        if (view instanceof WebView) {
-            return (WebView) view;
-        }
+        if (view == null) return null;
+        if (view instanceof WebView) return (WebView) view;
         if (view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
             for (int i = 0; i < group.getChildCount(); i++) {
@@ -97,16 +106,23 @@ public class TamodaAssetBridge extends AndroidNonvisibleComponent {
     }
 
     private WebResourceResponse handleAssetIntercept(String url) {
+        // Logika pembersihan URL: Hilangkan 'https://app.tamoda/'
         if (url.startsWith(this.targetDomain)) {
-            try {
-                String fileName = url.replace(this.targetDomain, "");
-                String mimeType = getMimeType(fileName);
+            String fileName = url.replace(this.targetDomain, "");
+            
+            // Buang tanda tanya (query) jika ada, misal: gambar.png?v=123
+            if (fileName.contains("?")) {
+                fileName = fileName.split("\\?")[0];
+            }
 
-                InputStream inputStream = context.getAssets().open(fileName);
-                return new WebResourceResponse(mimeType, "UTF-8", inputStream);
+            try {
+                InputStream is = context.getAssets().open(fileName);
+                String mimeType = getMimeType(fileName);
+                // Kembalikan file dari APK ke WebView
+                return new WebResourceResponse(mimeType, "UTF-8", is);
             } catch (IOException e) {
-                Log.e("TamodaAssetBridge", "Aset lokal tidak ketemu bos: " + url);
-                return null;
+                // Jika file tidak ketemu di assets APK
+                Log.e("TamodaAssetBridge", "File GAK ADA di APK: " + fileName);
             }
         }
         return null;
@@ -118,10 +134,8 @@ public class TamodaAssetBridge extends AndroidNonvisibleComponent {
         if (lower.endsWith(".gif")) return "image/gif";
         if (lower.endsWith(".webp")) return "image/webp";
         if (lower.endsWith(".svg")) return "image/svg+xml";
-        if (lower.endsWith(".mp3")) return "audio/mpeg";
         if (lower.endsWith(".css")) return "text/css";
         if (lower.endsWith(".js")) return "application/javascript";
-        if (lower.endsWith(".json")) return "application/json";
         return "image/png";
     }
 }
